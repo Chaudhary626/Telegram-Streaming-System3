@@ -1,12 +1,12 @@
 """
-TG Stream Server — Multi-Tenant Streaming Platform v2.0
+Stream Server - Multi-Tenant Streaming Platform v2.1
 
 Features: Secure admin (secret path), multi-payment gateway,
 manual payment verification, hierarchical content (Content→Season→Episode),
 inline bot buttons, subscription request system.
-MTProto streaming (NO Bot API getFile, NO 20MB limit).
+MTProto-based streaming (No file size limit).
 """
-import re, time, hmac, hashlib, urllib.request, logging, secrets, traceback
+import re, time, hmac, hashlib, urllib.request, logging, secrets, traceback, asyncio
 from typing import Optional
 from html import escape as he
 from collections import defaultdict
@@ -29,6 +29,7 @@ from config import (
 )
 from streamer import TelegramStreamer
 import database as db
+import metadata as meta
 from player import WATCH_PAGE, EMBED_PAGE
 from admin_templates import admin_login, admin_page
 from panel_templates import panel_login, panel_page, panel_embed_code
@@ -39,7 +40,7 @@ logger = logging.getLogger("tg-stream")
 tg_client = Client(name="stream_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True, no_updates=False)
 streamer: Optional[TelegramStreamer] = None
 
-app = FastAPI(title="TG Stream Server", docs_url=None, redoc_url=None)
+app = FastAPI(title="Stream Server", docs_url=None, redoc_url=None)
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
     allow_methods=["GET","HEAD","OPTIONS","POST"], allow_headers=["Range","Content-Type"],
     expose_headers=["Content-Range","Content-Length","Accept-Ranges","Content-Type"])
@@ -122,13 +123,13 @@ h1{{color:#ef4444;font-size:1.3rem}}p{{color:#7777aa;margin-top:12px}}</style></
 
 @app.get("/")
 async def root():
-    return JSONResponse({"service": "TG Stream Server", "status": "running", "version": "2.0"})
+    return JSONResponse({"service": "Stream Server", "status": "running", "version": "2.1"})
 
 @app.get("/health")
 async def health():
     c = tg_client.is_connected if tg_client else False
-    return JSONResponse({"status":"ok" if c else "degraded", "telegram":"connected" if c else "disconnected",
-        "protocol":"MTProto (NO getFile)", "max_file":"4GB"})
+    return JSONResponse({"status":"ok" if c else "degraded", "streaming":"connected" if c else "disconnected",
+        "protocol":"direct", "max_file":"4GB"})
 
 # ── Block old /admin path ────────────────────────────────────
 @app.get("/admin")
@@ -161,14 +162,14 @@ async def startup():
     except Exception as e:
         logger.warning(f"DB init: {e}")
     me = await tg_client.get_me()
-    logger.info(f"Started | Bot: @{me.username} | Admin: /{AP} | MTProto: ON | Port: {STREAM_PORT}")
+    logger.info(f"Started | Bot: @{me.username} | Admin: /{AP} | Streaming: ON | Port: {STREAM_PORT}")
 
 @app.on_event("shutdown")
 async def shutdown():
     if tg_client.is_connected: await tg_client.stop()
 
 # ═══════════════════════════════════════════════════════════════
-# /stream/{file_id} — MTProto streaming
+# /stream/{file_id} — Direct streaming
 # ═══════════════════════════════════════════════════════════════
 
 @app.get("/stream/{file_id}")
@@ -192,7 +193,7 @@ async def stream_video(file_id: str, request: Request, token: str="", expires: i
         start = int(parts[0]) if parts[0] else 0
         end = int(parts[1]) if len(parts)>1 and parts[1] else file_size-1
     clen = (end-start+1) if end is not None else None
-    hdrs = {"Content-Type":"video/mp4","Accept-Ranges":"bytes","Cache-Control":"no-store","X-Stream-Method":"mtproto"}
+    hdrs = {"Content-Type":"video/mp4","Accept-Ranges":"bytes","Cache-Control":"no-store","X-Stream-Method":"direct"}
     if file_size and clen: hdrs["Content-Length"]=str(clen)
     if is_range and file_size: hdrs["Content-Range"]=f"bytes {start}-{end}/{file_size}"
     async def gen():
@@ -562,7 +563,7 @@ async def admin_requests(request: Request, status: str="pending", msg: str=""):
     rows = ""
     for r in reqs:
         rb = {"pending":"badge-warn","approved":"badge-ok","rejected":"badge-err"}.get(r["status"],"badge-acc")
-        uname = he(r.get("user_name","") or str(r.get("user_id","")))
+        uname = he(r.get("username","") or r.get("display_name","") or str(r.get("user_id","")))
         pname = he(r.get("plan_name","") or "—")
         rows += f'<tr><td>@{uname}<br><span class="mono">{r.get("user_id","")}</span></td><td>{pname}</td><td>₹{r["amount"]}</td>'
         rows += f'<td>{he(r.get("method_type","") or "—")}</td><td><span class="mono">{he(r.get("transaction_id","") or "—")}</span></td>'
@@ -997,11 +998,13 @@ async def panel_logout():
     return r
 
 # ═══════════════════════════════════════════════════════════════
-# BOT HANDLERS — with Inline Buttons + Hierarchy
+# BOT HANDLERS — Smart Upload + Inline Buttons + Hierarchy
 # ═══════════════════════════════════════════════════════════════
 
-_pending_videos: dict = {}
-_pending_proofs: dict = {}  # telegram_id -> file_id for payment screenshots
+_pending_videos: dict = {}       # uid -> single pending video info
+_pending_batch: dict = {}        # uid -> list of pending video entries
+_batch_timers: dict = {}         # uid -> asyncio.Task for batch timer
+_pending_proofs: dict = {}       # uid -> file_id for payment screenshots
 
 def _btn(*rows):
     """Helper to build InlineKeyboardMarkup."""
@@ -1013,6 +1016,54 @@ def _btn(*rows):
 def _b(text, data=None, url=None):
     """Shortcut to create button tuple."""
     return (text, data, url)
+
+def _create_hierarchy(owner_id, title, season=None, episode=None):
+    """Auto-create content hierarchy: Title → Season X → Episode Y. Returns leaf content_id and slug."""
+    # Root content
+    root_slug = _slugify(title)
+    if not root_slug: root_slug = f"content-{secrets.token_hex(4)}"
+    existing = db.get_content_by_slug(root_slug)
+    if existing and existing["owner_id"] == owner_id:
+        parent_id = existing["id"]
+    else:
+        try:
+            parent_id = db.create_content(owner_id, title, root_slug)
+        except:
+            root_slug = f"{root_slug}-{secrets.token_hex(3)}"
+            parent_id = db.create_content(owner_id, title, root_slug)
+    final_slug = root_slug
+
+    # Season level
+    if season is not None:
+        s_title = f"Season {season}"
+        s_slug = f"{root_slug}-s{season:02d}"
+        existing = db.get_content_by_slug(s_slug)
+        if existing and existing["owner_id"] == owner_id:
+            parent_id = existing["id"]
+        else:
+            try:
+                parent_id = db.create_content(owner_id, s_title, s_slug, parent_id=parent_id)
+            except:
+                s_slug = f"{s_slug}-{secrets.token_hex(3)}"
+                parent_id = db.create_content(owner_id, s_title, s_slug, parent_id=parent_id)
+        final_slug = s_slug
+
+    # Episode level
+    if episode is not None:
+        e_title = f"Episode {episode}"
+        e_slug = f"{final_slug}-e{episode:02d}" if season is not None else f"{root_slug}-e{episode:02d}"
+        existing = db.get_content_by_slug(e_slug)
+        if existing and existing["owner_id"] == owner_id:
+            parent_id = existing["id"]
+        else:
+            try:
+                parent_id = db.create_content(owner_id, e_title, e_slug, parent_id=parent_id)
+            except:
+                e_slug = f"{e_slug}-{secrets.token_hex(3)}"
+                parent_id = db.create_content(owner_id, e_title, e_slug, parent_id=parent_id)
+        final_slug = e_slug
+
+    return parent_id, final_slug
 
 def _register_bot_handlers():
 
@@ -1030,19 +1081,18 @@ def _register_bot_handlers():
         admin_hint = "\n🔑 **Admin:** /users /grant /stats /broadcast" if is_ma(uid) else ""
         await m.reply_text(
             f"👋 **Welcome, {name}!**\n\n"
-            f"🎬 **TG Stream — Premium Video Platform**\n\n"
+            f"🎬 **Stream Platform — Premium Video Hosting**\n\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"📁 **/new** `Title` — Create content\n"
-            f"📁 **/new** `Title/Season/Episode` — Nested content\n"
-            f"📹 Send video → **/add** `slug Lang Quality`\n"
+            f"📹 **Just send videos** → auto-detected!\n"
+            f"📁 **/new** `Title/Season/Episode` — Manual create\n"
             f"🔗 **/links** `slug` — Get embed links\n"
-            f"📋 **/myvideos** — List my content\n"
+            f"📋 **/myvideos** — My content\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💳 **/subscribe** — View plans\n"
+            f"💳 **/subscribe** — Plans & pricing\n"
             f"📊 **/myplan** — Current plan\n"
-            f"🔐 **/setpassword** `pass` — Set password\n"
+            f"🔐 **/setpassword** `pass` — Panel access\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡ MTProto streaming — **NO 20MB limit!**{admin_hint}",
+            f"⚡ **No file size limit · HD streaming**{admin_hint}",
             reply_markup=_btn(
                 [_b("📁 My Content", "menu:content"), _b("💳 Plans", "menu:plans")],
                 [_b("🖥 Open Panel", url=f"{BASE()}/panel/login"), _b("📊 Status", "menu:status")]
@@ -1060,7 +1110,7 @@ def _register_bot_handlers():
         await m.reply_text(
             f"✅ **Password Set!**\n\n"
             f"🖥 Panel: {BASE()}/panel/login\n"
-            f"🆔 Telegram ID: `{m.from_user.id}`",
+            f"🆔 Your ID: `{m.from_user.id}`",
             reply_markup=_btn([_b("🖥 Open Panel", url=f"{BASE()}/panel/login")]))
 
     @tg_client.on_message(filters.private & filters.command("panel"))
@@ -1105,8 +1155,8 @@ def _register_bot_handlers():
                 "🎉 **7-Day Trial Activated!**\n\n"
                 "✅ 20 content · 5000 views/day · Ads enabled\n"
                 "⏰ Expires in 7 days\n\n"
-                "Start creating: /new `Title`",
-                reply_markup=_btn([_b("📁 Create Content", "menu:new_help"), _b("🖥 Panel", url=f"{BASE()}/panel/login")]))
+                "📹 Just send videos to start!",
+                reply_markup=_btn([_b("📹 Upload Video", "menu:upload_help"), _b("🖥 Panel", url=f"{BASE()}/panel/login")]))
 
     @tg_client.on_message(filters.private & filters.command("myplan"))
     async def cmd_myplan(_c, m: Message):
@@ -1124,6 +1174,7 @@ def _register_bot_handlers():
             f"━━━━━━━━━━━━━━━━━━━━",
             reply_markup=_btn([_b("💳 Upgrade", "menu:plans"), _b("🖥 Panel", url=f"{BASE()}/panel/login")]))
 
+    # ── /new command — backward compatible ───────────────────
     @tg_client.on_message(filters.private & filters.command("new"))
     async def cmd_new(_c, m: Message):
         parts = m.text.split(maxsplit=1)
@@ -1132,22 +1183,21 @@ def _register_bot_handlers():
             "Usage:\n"
             "`/new Naruto Episode 1`\n"
             "`/new Kaiju No.8/Season 1/Episode 1`\n\n"
-            "The `/` creates nested structure automatically!")
+            "The `/` creates nested structure automatically!\n\n"
+            "💡 **Tip:** Just send a video — metadata is auto-detected!")
         user = db.get_user(m.from_user.id)
         if not user: return await m.reply_text("Send /start first.")
         raw_title = parts[1].strip()
-        # Handle hierarchical paths: Title/SubTitle/SubSubTitle
         path_parts = [p.strip() for p in raw_title.split("/") if p.strip()]
         if not path_parts: return await m.reply_text("❌ Invalid title.")
         cc = db.count_content_by_owner(m.from_user.id)
-        if cc + len(path_parts) > user["max_content"] + 5:  # small buffer for hierarchy
+        if cc + len(path_parts) > user["max_content"] + 5:
             return await m.reply_text(f"❌ Content limit reached ({user['max_content']}). Upgrade plan.")
         parent_id = None
         created_slugs = []
-        for i, part_title in enumerate(path_parts):
+        for part_title in path_parts:
             slug = _slugify(part_title)
             if not slug: slug = f"content-{secrets.token_hex(4)}"
-            # Check if this already exists under this parent
             existing = db.get_content_by_slug(slug)
             if existing and existing["owner_id"] == m.from_user.id:
                 parent_id = existing["id"]
@@ -1164,7 +1214,7 @@ def _register_bot_handlers():
                     parent_id = new_id
                     created_slugs.append((part_title, slug, True))
                 except Exception as e:
-                    return await m.reply_text(f"❌ Error creating '{part_title}': {e}")
+                    return await m.reply_text(f"❌ Error: {e}")
         last_slug = created_slugs[-1][1]
         path_display = " → ".join(f"**{t}**" for t, _, _ in created_slugs)
         new_items = sum(1 for _, _, is_new in created_slugs if is_new)
@@ -1173,39 +1223,131 @@ def _register_bot_handlers():
             f"📂 {path_display}\n"
             f"🏷 Slug: `{last_slug}`\n"
             f"📦 {new_items} new item(s)\n\n"
-            f"📹 Send a video, then:\n`/add {last_slug} Hindi 720p`",
+            f"📹 Now send a video — it will be auto-detected!",
             reply_markup=_btn(
                 [_b("🔗 Get Links", f"links:{last_slug}"), _b("📁 My Content", "menu:content")]))
+
+    # ═════════════════════════════════════════════════════════
+    # SMART AUTO-UPLOAD — Core feature v2.1
+    # ═════════════════════════════════════════════════════════
+
+    async def _process_batch(uid):
+        """Process batch after 10s timeout. Sends batch summary."""
+        await asyncio.sleep(10)
+        batch = _pending_batch.get(uid, [])
+        if not batch:
+            return
+        if uid in _batch_timers:
+            del _batch_timers[uid]
+
+        if len(batch) == 1:
+            # Single video — already handled by on_video with smart card
+            return
+
+        # Multi-video batch summary
+        lines = []
+        for i, entry in enumerate(batch):
+            m = entry["meta"]
+            title = m.get("title") or "Unknown"
+            season = m.get("season")
+            episode = m.get("episode")
+            quality = m.get("quality") or "720p"
+            langs = " + ".join(m.get("languages") or ["Hindi"])
+            path = title
+            if season is not None: path += f" / S{season:02d}"
+            if episode is not None: path += f" / E{episode:02d}"
+            lines.append(f"**{i+1}.** {path}\n   📀 {quality} · 🔊 {langs}")
+
+        summary = "\n".join(lines)
+        try:
+            await tg_client.send_message(uid,
+                f"📦 **Batch Upload — {len(batch)} videos**\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n{summary}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"Tap below to save all videos at once:",
+                reply_markup=_btn(
+                    [_b(f"✅ Save All ({len(batch)})", f"batch_save:{uid}")],
+                    [_b("✏️ Edit One", f"batch_edit:{uid}"), _b("❌ Cancel All", f"batch_cancel:{uid}")]
+                ))
+        except Exception as e:
+            logger.error(f"Batch summary error: {e}")
 
     @tg_client.on_message(filters.private & (filters.video | filters.document))
     async def on_video(_c, m: Message):
         media = m.video or (m.document if m.document and (m.document.mime_type or "").startswith("video/") else None)
         if not media: return
-        q = _detect_quality(getattr(media,"width",0) or 0, getattr(media,"height",0) or 0)
-        _pending_videos[m.from_user.id] = {
-            "file_id": media.file_id, "file_unique_id": media.file_unique_id,
-            "file_size": media.file_size or 0, "duration": getattr(media,"duration",0) or 0,
-            "width": getattr(media,"width",0) or 0, "height": getattr(media,"height",0) or 0,
-            "file_name": getattr(media,"file_name","") or ""}
-        try: db.save_video({"file_id":media.file_id,"file_unique_id":media.file_unique_id,"file_size":media.file_size or 0,
-            "duration":getattr(media,"duration",0) or 0,"width":getattr(media,"width",0) or 0,"height":getattr(media,"height",0) or 0,
-            "file_name":getattr(media,"file_name","") or "","mime_type":media.mime_type or "video/mp4",
-            "caption":m.caption or "","message_id":m.id,"channel_id":m.chat.id,"quality":q})
-        except: pass
-        fname = getattr(media,'file_name','') or 'N/A'
-        fsize = _fmt_size(media.file_size or 0)
-        await m.reply_text(
-            f"📹 **Video Received!**\n\n"
-            f"📄 {fname}\n"
-            f"📊 {q} · {fsize}\n\n"
-            f"To add to content:\n"
-            f"`/add <slug> <Language> <Quality>`\n\n"
-            f"Example: `/add naruto-ep1 Hindi {q}`", quote=True)
 
+        uid = m.from_user.id
+        user = db.get_user(uid)
+        if not user:
+            db.create_user(uid, m.from_user.username or "", m.from_user.first_name or "")
+            user = db.get_user(uid)
+
+        # Extract metadata
+        caption = m.caption or ""
+        fname = getattr(media, "file_name", "") or ""
+        width = getattr(media, "width", 0) or 0
+        height = getattr(media, "height", 0) or 0
+        parsed = meta.parse_video_metadata(caption, fname, width, height)
+
+        # Build video entry
+        entry = {
+            "file_id": media.file_id,
+            "file_unique_id": media.file_unique_id,
+            "file_size": media.file_size or 0,
+            "duration": getattr(media, "duration", 0) or 0,
+            "width": width, "height": height,
+            "file_name": fname,
+            "meta": parsed,
+        }
+
+        # Save to DB
+        q = meta.detect_quality_from_resolution(width, height) if (width or height) else "720p"
+        try:
+            db.save_video({"file_id": media.file_id, "file_unique_id": media.file_unique_id,
+                "file_size": media.file_size or 0, "duration": entry["duration"],
+                "width": width, "height": height, "file_name": fname,
+                "mime_type": media.mime_type or "video/mp4", "caption": caption,
+                "message_id": m.id, "channel_id": m.chat.id, "quality": q})
+        except: pass
+
+        # Store for backward-compatible /add command
+        _pending_videos[uid] = entry
+
+        # Add to batch
+        if uid not in _pending_batch:
+            _pending_batch[uid] = []
+        _pending_batch[uid].append(entry)
+
+        # Cancel existing batch timer and restart
+        if uid in _batch_timers:
+            _batch_timers[uid].cancel()
+
+        # Show smart card for this video
+        card_text = meta.format_metadata_card(parsed, media.file_size or 0, entry["duration"])
+
+        # Unique hash for this entry in callbacks
+        entry_idx = len(_pending_batch[uid]) - 1
+
+        await m.reply_text(
+            card_text,
+            quote=True,
+            reply_markup=_btn(
+                [_b("✅ Auto-Save", f"save:{uid}:{entry_idx}"), _b("✏️ Edit", f"edit:{uid}:{entry_idx}")],
+                [_b("🔄 Change Lang", f"elang:{uid}:{entry_idx}"), _b("🔄 Change Quality", f"equal:{uid}:{entry_idx}")],
+                [_b("❌ Cancel", f"cancel:{uid}:{entry_idx}")]
+            ))
+
+        # Start 10s batch timer
+        _batch_timers[uid] = asyncio.create_task(_process_batch(uid))
+
+    # ── /add command — backward compatible ───────────────────
     @tg_client.on_message(filters.private & filters.command("add"))
     async def cmd_add(_c, m: Message):
         parts = m.text.split()
-        if len(parts) < 4: return await m.reply_text("Usage: `/add slug Language Quality`\n\nSend video first!")
+        if len(parts) < 4: return await m.reply_text(
+            "Usage: `/add slug Language Quality`\n\nSend video first!\n\n"
+            "💡 **Tip:** Just send a video — it's auto-detected now!")
         slug, lang, qual = parts[1], parts[2], parts[3]
         pending = _pending_videos.get(m.from_user.id)
         if not pending: return await m.reply_text("⚠️ Send a video first.")
@@ -1213,8 +1355,8 @@ def _register_bot_handlers():
         if not content: return await m.reply_text(f"❌ `{slug}` not found. Create with /new.")
         if content["owner_id"] != m.from_user.id: return await m.reply_text("❌ Not your content.")
         try:
-            db.add_source(content["id"], pending["file_id"], lang, qual, pending["file_unique_id"],
-                pending["file_size"], pending["duration"], pending["width"], pending["height"])
+            db.add_source(content["id"], pending["file_id"], lang, qual, pending.get("file_unique_id",""),
+                pending.get("file_size",0), pending.get("duration",0), pending.get("width",0), pending.get("height",0))
             del _pending_videos[m.from_user.id]
             sources = db.get_sources_by_content(content["id"])
             ss = " · ".join(f"{s['language']} {s['quality']}" for s in sources)
@@ -1243,21 +1385,20 @@ def _register_bot_handlers():
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"▶️ **Player:**\n`{watch_url}`\n\n"
             f"🖼 **iFrame:**\n`<iframe src=\"{base}/embed/{content['slug']}\" width=\"720\" height=\"405\" allowfullscreen></iframe>`\n\n"
-            f"📺 **Sources:**\n{ss}\n\n"
-            f"⚡ MTProto — NO 20MB limit",
+            f"📺 **Sources:**\n{ss}",
             disable_web_page_preview=True,
             reply_markup=_btn([_b("▶️ Watch", url=watch_url), _b("🖥 Panel", url=f"{base}/panel/login")]))
 
     @tg_client.on_message(filters.private & filters.command("myvideos"))
     async def cmd_myvideos(_c, m: Message):
         items = db.list_content_by_owner(m.from_user.id, 20)
-        if not items: return await m.reply_text("📭 No content yet.\n\nUse /new to create!",
-            reply_markup=_btn([_b("📁 Create Content", "menu:new_help")]))
-        lines = "\n".join(f"{'📂' if True else '📄'} **{c['title']}** (`{c['slug']}`) — {c.get('source_count',0)} sources" for c in items)
+        if not items: return await m.reply_text("📭 No content yet.\n\n📹 Just send a video to start!",
+            reply_markup=_btn([_b("📹 How to Upload", "menu:upload_help")]))
+        lines = "\n".join(f"📁 **{c['title']}** (`{c['slug']}`) — {c.get('source_count',0)} src" for c in items)
         await m.reply_text(
             f"📁 **My Content ({len(items)})**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n{lines}",
-            reply_markup=_btn([_b("📁 Create New", "menu:new_help"), _b("🖥 Panel", url=f"{BASE()}/panel/content")]))
+            reply_markup=_btn([_b("📹 Upload Video", "menu:upload_help"), _b("🖥 Panel", url=f"{BASE()}/panel/content")]))
 
     @tg_client.on_message(filters.private & filters.command("delete"))
     async def cmd_delete(_c, m: Message):
@@ -1291,8 +1432,8 @@ def _register_bot_handlers():
         await m.reply_text(
             f"📊 **Server Status**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔌 MTProto: {'✅ Connected' if c else '❌ Disconnected'}\n"
-            f"📦 20MB Limit: **BYPASSED**\n"
+            f"🔌 Streaming: {'✅ Connected' if c else '❌ Disconnected'}\n"
+            f"📦 File Limit: **None (unlimited)**\n"
             f"📁 My content: {cc}\n"
             f"👁 Views: {stats['total']} total · {stats['today']} today\n"
             f"🌐 Server: {BASE()}")
@@ -1321,7 +1462,7 @@ def _register_bot_handlers():
         parts = m.text.split()
         if len(parts) < 2: return await m.reply_text("Usage: `/rmchannel Name`")
         ch = db.get_channel_by_name(parts[1])
-        if ch: db.delete_channel(ch["id"]); await m.reply_text(f"🗑 Removed")
+        if ch: db.delete_channel(ch["id"]); await m.reply_text("🗑 Removed")
         else: await m.reply_text("Not found.")
 
     @tg_client.on_message(filters.private & filters.command("users"))
@@ -1405,27 +1546,208 @@ def _register_bot_handlers():
             "message_id":m.id,"channel_id":m.chat.id,"quality":_detect_quality(getattr(media,"width",0) or 0,getattr(media,"height",0) or 0)})
         except: pass
 
-    # ── Callback Query Handler ───────────────────────────────
+    # ═════════════════════════════════════════════════════════
+    # CALLBACK QUERY HANDLER — Smart Upload + Menu
+    # ═════════════════════════════════════════════════════════
 
     @tg_client.on_callback_query()
     async def on_callback(client, cq: CallbackQuery):
         data = cq.data or ""
         uid = cq.from_user.id
 
-        if data == "menu:content":
+        # ── Smart Upload: Auto-Save ──────────────────────────
+        if data.startswith("save:"):
+            parts = data.split(":")
+            if len(parts) < 3: return await cq.answer("Invalid", show_alert=True)
+            target_uid, idx = int(parts[1]), int(parts[2])
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            if idx >= len(batch): return await cq.answer("Video expired", show_alert=True)
+            entry = batch[idx]
+            m = entry["meta"]
+            title = m.get("title") or "Untitled"
+            season = m.get("season")
+            episode = m.get("episode")
+            quality = m.get("quality") or "720p"
+            languages = m.get("languages") or ["Hindi"]
+            try:
+                content_id, slug = _create_hierarchy(uid, title, season, episode)
+                # Create source entries — one per language (Option A)
+                for lang in languages:
+                    db.add_source(content_id, entry["file_id"], lang, quality,
+                        entry.get("file_unique_id",""), entry.get("file_size",0),
+                        entry.get("duration",0), entry.get("width",0), entry.get("height",0))
+                path = title
+                if season is not None: path += f" → S{season:02d}"
+                if episode is not None: path += f" → E{episode:02d}"
+                lang_str = " + ".join(languages)
+                multi_warn = ""
+                if len(languages) > 1:
+                    multi_warn = ("\n\n⚠️ **Note:** This video will play only in its default audio language. "
+                                  "The languages listed are reference labels. "
+                                  "For actual language switching, upload separate files per language.")
+                await cq.message.edit_text(
+                    f"✅ **Saved Successfully!**\n\n"
+                    f"📂 {path}\n"
+                    f"📀 {quality} · 🔊 {lang_str}\n"
+                    f"🏷 Slug: `{slug}`{multi_warn}",
+                    reply_markup=_btn(
+                        [_b("🔗 Get Links", f"links:{slug}"), _b("📁 My Content", "menu:content")]))
+            except Exception as e:
+                await cq.answer(f"Error: {str(e)[:100]}", show_alert=True)
+
+        # ── Smart Upload: Edit ───────────────────────────────
+        elif data.startswith("edit:"):
+            parts = data.split(":")
+            if len(parts) < 3: return await cq.answer("Invalid", show_alert=True)
+            target_uid, idx = int(parts[1]), int(parts[2])
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            if idx >= len(batch): return await cq.answer("Video expired", show_alert=True)
+            entry = batch[idx]
+            m = entry["meta"]
+            await cq.message.edit_text(
+                f"✏️ **Edit Video Metadata**\n\n"
+                f"Current:\n"
+                f"📝 Title: **{m.get('title') or 'Unknown'}**\n"
+                f"🎬 Season: **{m.get('season') or '—'}** · Episode: **{m.get('episode') or '—'}**\n"
+                f"📀 Quality: **{m.get('quality') or '720p'}**\n"
+                f"🔊 Language: **{' + '.join(m.get('languages') or ['Hindi'])}**\n\n"
+                f"Choose what to change:",
+                reply_markup=_btn(
+                    [_b("📝 Set Title", f"set_title:{uid}:{idx}"), _b("🎬 Set Season/Ep", f"set_ep:{uid}:{idx}")],
+                    [_b("🔊 Change Lang", f"elang:{uid}:{idx}"), _b("📀 Change Quality", f"equal:{uid}:{idx}")],
+                    [_b("✅ Save As-Is", f"save:{uid}:{idx}"), _b("❌ Cancel", f"cancel:{uid}:{idx}")]
+                ))
+
+        # ── Change Language ──────────────────────────────────
+        elif data.startswith("elang:"):
+            parts = data.split(":")
+            target_uid, idx = int(parts[1]), int(parts[2])
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            common_langs = ["Hindi", "English", "Japanese", "Tamil", "Telugu", "Korean", "Dual Audio"]
+            btns = [[_b(lang, f"setlang:{uid}:{idx}:{lang}") for lang in common_langs[i:i+3]] for i in range(0, len(common_langs), 3)]
+            btns.append([_b("← Back", f"edit:{uid}:{idx}")])
+            await cq.message.edit_text("🔊 **Select Language:**", reply_markup=_btn(*btns))
+
+        elif data.startswith("setlang:"):
+            parts = data.split(":")
+            target_uid, idx, lang = int(parts[1]), int(parts[2]), parts[3]
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            if idx < len(batch):
+                batch[idx]["meta"]["languages"] = [lang]
+            await cq.answer(f"Language set to {lang}")
+            # Go back to edit
+            entry = batch[idx] if idx < len(batch) else None
+            if entry:
+                m = entry["meta"]
+                await cq.message.edit_text(
+                    f"✏️ **Updated!** Language → **{lang}**\n\n"
+                    f"📝 {m.get('title') or 'Unknown'} · 📀 {m.get('quality') or '720p'}",
+                    reply_markup=_btn(
+                        [_b("✅ Save Now", f"save:{uid}:{idx}"), _b("✏️ More Edits", f"edit:{uid}:{idx}")]))
+
+        # ── Change Quality ───────────────────────────────────
+        elif data.startswith("equal:"):
+            parts = data.split(":")
+            target_uid, idx = int(parts[1]), int(parts[2])
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            qualities = ["480p", "720p", "1080p", "2160p"]
+            btns = [[_b(q, f"setqual:{uid}:{idx}:{q}") for q in qualities]]
+            btns.append([_b("← Back", f"edit:{uid}:{idx}")])
+            await cq.message.edit_text("📀 **Select Quality:**", reply_markup=_btn(*btns))
+
+        elif data.startswith("setqual:"):
+            parts = data.split(":")
+            target_uid, idx, qual = int(parts[1]), int(parts[2]), parts[3]
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            if idx < len(batch):
+                batch[idx]["meta"]["quality"] = qual
+            await cq.answer(f"Quality set to {qual}")
+            entry = batch[idx] if idx < len(batch) else None
+            if entry:
+                m = entry["meta"]
+                await cq.message.edit_text(
+                    f"✏️ **Updated!** Quality → **{qual}**\n\n"
+                    f"📝 {m.get('title') or 'Unknown'} · 🔊 {' + '.join(m.get('languages') or ['Hindi'])}",
+                    reply_markup=_btn(
+                        [_b("✅ Save Now", f"save:{uid}:{idx}"), _b("✏️ More Edits", f"edit:{uid}:{idx}")]))
+
+        # ── Set Title (ask user to type) ─────────────────────
+        elif data.startswith("set_title:"):
+            await cq.answer("Send the title as a text message.\nFormat: Title or Title/Season 1/Episode 1", show_alert=True)
+
+        elif data.startswith("set_ep:"):
+            await cq.answer("Send season/episode as: S01E04\nOr use /new Title/Season 1/Episode 4", show_alert=True)
+
+        # ── Cancel ───────────────────────────────────────────
+        elif data.startswith("cancel:"):
+            parts = data.split(":")
+            target_uid, idx = int(parts[1]), int(parts[2])
+            if uid != target_uid: return await cq.answer("Not your video", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            if idx < len(batch):
+                batch[idx] = None  # Mark as cancelled
+            await cq.message.edit_text("❌ **Cancelled.**\n\nSend another video anytime.")
+
+        # ── Batch Save All ───────────────────────────────────
+        elif data.startswith("batch_save:"):
+            target_uid = int(data.split(":")[1])
+            if uid != target_uid: return await cq.answer("Not your batch", show_alert=True)
+            batch = _pending_batch.get(uid, [])
+            saved = 0; errors = 0
+            for entry in batch:
+                if entry is None: continue  # Cancelled
+                m = entry["meta"]
+                title = m.get("title") or "Untitled"
+                try:
+                    content_id, slug = _create_hierarchy(uid, title, m.get("season"), m.get("episode"))
+                    for lang in (m.get("languages") or ["Hindi"]):
+                        db.add_source(content_id, entry["file_id"], lang, m.get("quality","720p"),
+                            entry.get("file_unique_id",""), entry.get("file_size",0),
+                            entry.get("duration",0), entry.get("width",0), entry.get("height",0))
+                    saved += 1
+                except: errors += 1
+            _pending_batch.pop(uid, None)
+            _pending_videos.pop(uid, None)
+            err_note = f"\n⚠️ {errors} failed" if errors else ""
+            await cq.message.edit_text(
+                f"✅ **Batch Complete!**\n\n"
+                f"📦 {saved} videos saved{err_note}\n\n"
+                f"All content has been organized automatically.",
+                reply_markup=_btn([_b("📁 My Content", "menu:content"), _b("🖥 Panel", url=f"{BASE()}/panel/content")]))
+
+        # ── Batch Cancel All ─────────────────────────────────
+        elif data.startswith("batch_cancel:"):
+            target_uid = int(data.split(":")[1])
+            if uid != target_uid: return await cq.answer("Not your batch", show_alert=True)
+            _pending_batch.pop(uid, None)
+            _pending_videos.pop(uid, None)
+            await cq.message.edit_text("❌ **Batch cancelled.** All pending videos removed.")
+
+        # ── Batch Edit (show list) ───────────────────────────
+        elif data.startswith("batch_edit:"):
+            target_uid = int(data.split(":")[1])
+            if uid != target_uid: return await cq.answer("Not your batch", show_alert=True)
+            await cq.answer("Edit each video individually using the Edit button on each message.", show_alert=True)
+
+        # ── Menu Callbacks ───────────────────────────────────
+        elif data == "menu:content":
             items = db.list_content_by_owner(uid, 10)
             if not items:
-                await cq.answer("No content yet. Use /new", show_alert=True)
+                await cq.answer("No content yet. Send a video!", show_alert=True)
                 return
             lines = "\n".join(f"📁 **{c['title']}** (`{c['slug']}`) — {c.get('source_count',0)} src" for c in items)
             await cq.message.edit_text(f"📁 **My Content:**\n\n{lines}",
-                reply_markup=_btn([_b("📁 Create New", "menu:new_help"), _b("🖥 Panel", url=f"{BASE()}/panel/content")]))
+                reply_markup=_btn([_b("📹 Upload Video", "menu:upload_help"), _b("🖥 Panel", url=f"{BASE()}/panel/content")]))
 
         elif data == "menu:plans":
             plans = db.list_plans()
             lines = "\n".join(f"{'🆓' if p['slug']=='free' else '💎'} **{p['name']}** — ₹{p['price']} | {p['max_content']} content | {p['duration_days']}d" for p in plans)
             await cq.message.edit_text(f"💳 **Plans:**\n\n{lines}\n\nUse /subscribe for details.",
-                reply_markup=_btn([_b("💳 View Details", "menu:subscribe_detail")]))
+                reply_markup=_btn([_b("💳 Subscribe", "menu:subscribe_detail")]))
 
         elif data == "menu:subscribe_detail":
             await cq.answer("Use /subscribe command", show_alert=True)
@@ -1433,7 +1755,13 @@ def _register_bot_handlers():
         elif data == "menu:status":
             c = tg_client.is_connected
             cc = db.count_content_by_owner(uid)
-            await cq.answer(f"MTProto: {'ON' if c else 'OFF'} | Content: {cc}", show_alert=True)
+            await cq.answer(f"Streaming: {'ON' if c else 'OFF'} | Content: {cc}", show_alert=True)
+
+        elif data == "menu:upload_help":
+            await cq.answer(
+                "Just send a video!\n"
+                "Add caption with Title/Season/Episode.\n"
+                "Bot auto-detects everything.", show_alert=True)
 
         elif data == "menu:new_help":
             await cq.answer("Use: /new Title or /new Title/Season/Episode", show_alert=True)
@@ -1460,7 +1788,7 @@ def _register_bot_handlers():
         else:
             await cq.answer("Unknown action", show_alert=True)
 
-    logger.info("Bot handlers registered (v2.0 — inline buttons + hierarchy).")
+    logger.info("Bot handlers registered (v2.1 — smart upload + batch + inline buttons).")
 
 # ═══════════════════════════════════════════════════════════════
 if __name__ == "__main__":

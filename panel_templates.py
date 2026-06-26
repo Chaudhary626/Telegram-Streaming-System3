@@ -1,112 +1,190 @@
 """
-Sub-Admin Panel HTML Templates.
-Used by server.py for /panel/* routes.
-
-Uses function-based rendering (NOT .format) to avoid CSS var() conflicts.
+Sub-Admin Panel HTML Templates — Premium SaaS Design.
+Uses Inter font, glassmorphism, gradient cards.
+Function-based rendering to avoid CSS var() conflicts.
 """
 
 
 def panel_login(error=""):
-    """Render panel login page."""
+    """Render panel login page — premium glassmorphism."""
     err_html = f'<p class="err">{error}</p>' if error else ""
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>Panel Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#0d0d1a;color:#d0d0e8;font-family:'Segoe UI',system-ui,sans-serif;
-  display:flex;align-items:center;justify-content:center;min-height:100vh}}
-.card{{background:#141425;border:1px solid #2a2a48;border-radius:16px;
-  padding:40px;width:100%;max-width:400px;text-align:center}}
-h1{{font-size:1.3rem;margin-bottom:8px}}
-p{{color:#7777aa;font-size:.85rem;margin-bottom:24px}}
-input{{background:#1c1c35;border:1px solid #2a2a48;color:#d0d0e8;
-  padding:10px 14px;border-radius:8px;width:100%;font-size:.9rem;outline:none;margin-bottom:14px}}
-input:focus{{border-color:#9333ea}}
-button{{background:linear-gradient(135deg,#7c5cfc,#9333ea);color:#fff;border:none;padding:10px 24px;
-  border-radius:8px;font-size:.9rem;cursor:pointer;width:100%}}
-button:hover{{opacity:.9}}
-.err{{color:#ef4444;font-size:.82rem;margin-bottom:12px}}
-.hint{{color:#7777aa;font-size:.78rem;margin-top:16px}}
-.hint a{{color:#a78bfa;text-decoration:none}}
+body{{background:#06060f;color:#e2e4f0;font-family:'Inter',system-ui,sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh;
+  background-image:radial-gradient(ellipse at 80% 50%,rgba(147,51,234,.07) 0%,transparent 50%),
+    radial-gradient(ellipse at 20% 80%,rgba(99,66,255,.05) 0%,transparent 40%)}}
+.card{{background:rgba(16,16,32,.75);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(147,51,234,.15);border-radius:20px;padding:44px 36px;width:100%;max-width:400px;
+  text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.04)}}
+.logo{{font-size:2rem;margin-bottom:6px;filter:drop-shadow(0 0 8px rgba(147,51,234,.4))}}
+h1{{font-size:1.2rem;font-weight:600;letter-spacing:-.02em;margin-bottom:4px}}
+.sub{{color:#6b6b8d;font-size:.82rem;margin-bottom:28px}}
+input{{background:rgba(255,255,255,.04);border:1px solid rgba(147,51,234,.12);color:#e2e4f0;
+  padding:12px 16px;border-radius:12px;width:100%;font-size:.9rem;outline:none;
+  font-family:inherit;margin-bottom:14px;transition:border-color .2s,box-shadow .2s}}
+input:focus{{border-color:rgba(147,51,234,.5);box-shadow:0 0 0 3px rgba(147,51,234,.1)}}
+button{{background:linear-gradient(135deg,#7c3aed,#9333ea);color:#fff;border:none;padding:12px 28px;
+  border-radius:12px;font-size:.9rem;font-weight:600;cursor:pointer;width:100%;
+  font-family:inherit;transition:transform .15s,box-shadow .15s}}
+button:hover{{transform:translateY(-1px);box-shadow:0 4px 20px rgba(147,51,234,.35)}}
+.err{{color:#f43f5e;font-size:.82rem;margin-bottom:14px;padding:8px 12px;
+  background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.15);border-radius:10px}}
+.hint{{color:#6b6b8d;font-size:.78rem;margin-top:18px;line-height:1.6}}
+.hint b{{color:#a78bfa}}
 </style></head><body>
 <div class="card">
-<h1>🎬 TG Stream Panel</h1>
-<p>Sub-Admin Access</p>
+<div class="logo">🎬</div>
+<h1>Stream Panel</h1>
+<p class="sub">Sub-admin access · Manage your content</p>
 {err_html}
 <form method="POST" action="/panel/login">
   <input type="number" name="telegram_id" placeholder="Your Telegram ID" required>
   <input type="password" name="password" placeholder="Password" required>
-  <button type="submit">Login</button>
+  <button type="submit">Sign In</button>
 </form>
-<p class="hint">New? Send <b>/start</b> to the bot first, then <b>/setpassword</b></p>
+<p class="hint">New? Send <b>/start</b> to the bot, then <b>/setpassword</b></p>
 </div>
 </body></html>"""
 
 
 _PCSS = """
-:root{--bg:#0d0d1a;--s1:#141425;--s2:#1c1c35;--bdr:#2a2a48;--txt:#d0d0e8;
-  --txt2:#7777aa;--acc:#9333ea;--acc2:#a78bfa;--ok:#22c55e;--err:#ef4444}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root{--bg:#06060f;--s1:rgba(16,16,32,.75);--s2:rgba(22,22,44,.6);--s3:rgba(30,30,55,.5);
+  --bdr:rgba(147,51,234,.1);--bdr2:rgba(255,255,255,.06);--txt:#e2e4f0;--txt2:#6b6b8d;--txt3:#4a4a6a;
+  --acc:#7c3aed;--acc2:#9333ea;--acc3:#a78bfa;--ok:#10b981;--err:#f43f5e;--warn:#f59e0b;
+  --grad1:linear-gradient(135deg,#7c3aed,#9333ea);--grad2:linear-gradient(135deg,#10b981,#34d399);
+  --grad3:linear-gradient(135deg,#f59e0b,#fbbf24);--grad4:linear-gradient(135deg,#f43f5e,#fb7185)}
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',system-ui,sans-serif;display:flex;min-height:100vh}
-.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--bdr);padding:20px 0;flex-shrink:0}
-.sidebar h2{padding:0 20px 12px;font-size:1rem;color:var(--acc2)}
-.sidebar .plan-badge{display:block;margin:0 20px 16px;padding:4px 10px;background:rgba(147,51,234,.15);
-  color:var(--acc2);border-radius:8px;font-size:.72rem;text-align:center}
-.sidebar a{display:block;padding:10px 20px;color:var(--txt2);text-decoration:none;font-size:.88rem;
-  border-left:3px solid transparent;transition:all .15s}
-.sidebar a:hover,.sidebar a.active{color:var(--txt);background:var(--s2);border-left-color:var(--acc)}
-.main{flex:1;padding:24px 32px;overflow-y:auto;max-height:100vh}
-.main h1{font-size:1.5rem;margin-bottom:20px;color:#fff}
-table{width:100%;border-collapse:collapse;margin:16px 0;font-size:.85rem}
-th{text-align:left;padding:10px 12px;background:var(--s2);color:var(--txt2);border-bottom:1px solid var(--bdr);
-  font-weight:500;font-size:.78rem;text-transform:uppercase;letter-spacing:.5px}
-td{padding:10px 12px;border-bottom:1px solid var(--bdr);vertical-align:top}
-tr:hover td{background:rgba(147,51,234,.04)}
-.btn{display:inline-block;padding:6px 16px;border-radius:8px;font-size:.82rem;cursor:pointer;border:none;
-  text-decoration:none;transition:all .15s;color:#fff}
-.btn-primary{background:var(--acc)}.btn-primary:hover{background:var(--acc2)}
-.btn-danger{background:var(--err)}.btn-sm{padding:4px 10px;font-size:.75rem}
-.card{background:var(--s1);border:1px solid var(--bdr);border-radius:12px;padding:20px;margin-bottom:16px}
-.stat{text-align:center}.stat-value{font-size:2rem;font-weight:700;color:var(--acc2)}
-.stat-label{font-size:.78rem;color:var(--txt2);margin-top:4px}
+body{background:var(--bg);color:var(--txt);font-family:'Inter',system-ui,sans-serif;display:flex;min-height:100vh;
+  background-image:radial-gradient(ellipse at 100% 0%,rgba(147,51,234,.05) 0%,transparent 50%)}
+::selection{background:rgba(147,51,234,.3)}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(147,51,234,.2);border-radius:3px}
+
+/* ─── SIDEBAR ─── */
+.sidebar{width:230px;background:var(--s1);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border-right:1px solid var(--bdr);padding:24px 0;flex-shrink:0;overflow-y:auto;
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.sidebar .brand{padding:0 20px 12px;display:flex;align-items:center;gap:10px}
+.sidebar .brand-icon{font-size:1.3rem;filter:drop-shadow(0 0 6px rgba(147,51,234,.4))}
+.sidebar .brand-text{font-size:.95rem;font-weight:700;letter-spacing:-.03em;
+  background:var(--grad1);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.plan-badge{margin:0 18px 18px;padding:6px 12px;background:rgba(147,51,234,.1);
+  border:1px solid rgba(147,51,234,.15);color:var(--acc3);border-radius:10px;
+  font-size:.72rem;text-align:center;font-weight:600;letter-spacing:.02em}
+.sidebar .nav-section{font-size:.63rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--txt3);padding:14px 20px 6px}
+.sidebar a{display:flex;align-items:center;gap:10px;padding:9px 20px;color:var(--txt2);text-decoration:none;
+  font-size:.84rem;font-weight:500;border-left:2px solid transparent;transition:all .2s;position:relative}
+.sidebar a:hover{color:var(--txt);background:rgba(147,51,234,.05)}
+.sidebar a.active{color:var(--txt);background:rgba(147,51,234,.08);border-left-color:var(--acc)}
+.nav-icon{font-size:1rem;width:20px;text-align:center;flex-shrink:0}
+
+/* ─── MAIN ─── */
+.main{flex:1;padding:28px 36px;overflow-y:auto;max-height:100vh}
+.main h1{font-size:1.5rem;font-weight:700;letter-spacing:-.03em;margin-bottom:6px}
+.main .page-desc{color:var(--txt2);font-size:.85rem;margin-bottom:24px}
+
+/* ─── STAT CARDS ─── */
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin:16px 0}
-input[type=text],input[type=password],input[type=number],select,textarea{background:var(--s2);border:1px solid var(--bdr);
-  color:var(--txt);padding:8px 12px;border-radius:8px;font-size:.85rem;width:100%;outline:none}
-input:focus,select:focus,textarea:focus{border-color:var(--acc)}
-label{display:block;font-size:.78rem;color:var(--txt2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.3px}
+.stat-card{background:var(--s1);backdrop-filter:blur(12px);border:1px solid var(--bdr);border-radius:16px;
+  padding:18px 20px;transition:transform .2s,box-shadow .2s;position:relative;overflow:hidden}
+.stat-card:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.stat-card.purple::before{background:var(--grad1)}.stat-card.green::before{background:var(--grad2)}
+.stat-card.yellow::before{background:var(--grad3)}.stat-card.red::before{background:var(--grad4)}
+.stat-icon{font-size:1.5rem;margin-bottom:6px}
+.stat-value{font-size:1.8rem;font-weight:700;letter-spacing:-.04em;line-height:1}
+.stat-label{font-size:.72rem;color:var(--txt2);margin-top:4px;font-weight:500;text-transform:uppercase;letter-spacing:.04em}
+
+/* ─── CARDS ─── */
+.card{background:var(--s1);backdrop-filter:blur(12px);border:1px solid var(--bdr);border-radius:16px;
+  padding:22px 24px;margin-bottom:16px;transition:border-color .2s}
+.card:hover{border-color:rgba(147,51,234,.2)}
+.card h3{font-size:.92rem;font-weight:600;margin-bottom:14px}
+
+/* ─── TABLE ─── */
+table{width:100%;border-collapse:separate;border-spacing:0;margin:16px 0;font-size:.84rem}
+thead th{text-align:left;padding:10px 14px;color:var(--txt2);font-weight:600;font-size:.72rem;
+  text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--bdr);background:rgba(147,51,234,.03)}
+thead th:first-child{border-radius:12px 0 0 0}thead th:last-child{border-radius:0 12px 0 0}
+tbody td{padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.03);vertical-align:middle;transition:background .15s}
+tbody tr:hover td{background:rgba(147,51,234,.04)}
+
+/* ─── BUTTONS ─── */
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 16px;border-radius:10px;font-size:.8rem;
+  cursor:pointer;border:none;text-decoration:none;transition:all .2s;color:#fff;font-family:inherit;font-weight:500}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.btn-primary{background:var(--grad1)}.btn-danger{background:var(--grad4)}
+.btn-ok{background:var(--grad2)}.btn-warn{background:var(--grad3);color:#000}
+.btn-ghost{background:transparent;border:1px solid var(--bdr);color:var(--txt2)}
+.btn-ghost:hover{border-color:var(--acc);color:var(--txt)}
+.btn-sm{padding:5px 12px;font-size:.73rem;border-radius:8px}
+
+/* ─── FORMS ─── */
+input[type=text],input[type=password],input[type=number],input[type=url],select,textarea{
+  background:rgba(255,255,255,.04);border:1px solid var(--bdr2);color:var(--txt);padding:9px 14px;
+  border-radius:10px;font-size:.85rem;width:100%;outline:none;font-family:inherit;transition:border-color .2s,box-shadow .2s}
+input:focus,select:focus,textarea:focus{border-color:rgba(147,51,234,.4);box-shadow:0 0 0 3px rgba(147,51,234,.08)}
+label{display:block;font-size:.72rem;color:var(--txt2);margin-bottom:5px;font-weight:600;
+  text-transform:uppercase;letter-spacing:.04em}
 .form-group{margin-bottom:14px}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.7rem}
-.badge-ok{background:rgba(34,197,94,.15);color:var(--ok)}
-.badge-err{background:rgba(239,68,68,.15);color:var(--err)}
-.badge-acc{background:rgba(147,51,234,.15);color:var(--acc2)}
-.mono{font-family:monospace;font-size:.8rem;word-break:break-all;color:var(--txt2)}
-.flash{padding:10px 16px;border-radius:8px;margin-bottom:16px;font-size:.85rem}
-.flash-ok{background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:var(--ok)}
-.code-box{background:var(--s2);border:1px solid var(--bdr);border-radius:8px;padding:12px;
-  font-family:monospace;font-size:.8rem;word-break:break-all;position:relative;margin:8px 0}
-.copy-btn{position:absolute;top:6px;right:6px;background:var(--acc);color:#fff;border:none;
-  padding:4px 10px;border-radius:6px;font-size:.72rem;cursor:pointer}
-.copy-btn:hover{background:var(--acc2)}
-@media(max-width:768px){.sidebar{display:none}.main{padding:16px}}
+
+/* ─── BADGES ─── */
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:20px;font-size:.7rem;font-weight:600}
+.badge-ok{background:rgba(16,185,129,.1);color:var(--ok);border:1px solid rgba(16,185,129,.15)}
+.badge-err{background:rgba(244,63,94,.1);color:var(--err);border:1px solid rgba(244,63,94,.15)}
+.badge-acc{background:rgba(147,51,234,.1);color:var(--acc3);border:1px solid rgba(147,51,234,.15)}
+.badge-warn{background:rgba(245,158,11,.1);color:var(--warn);border:1px solid rgba(245,158,11,.15)}
+.mono{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--txt2)}
+
+.flash{padding:12px 18px;border-radius:12px;margin-bottom:16px;font-size:.85rem;font-weight:500;
+  display:flex;align-items:center;gap:8px;animation:flash-in .3s}
+.flash-ok{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);color:var(--ok)}
+.flash-err{background:rgba(244,63,94,.08);border:1px solid rgba(244,63,94,.2);color:var(--err)}
+@keyframes flash-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+
+.code-box{background:rgba(255,255,255,.03);border:1px solid var(--bdr2);border-radius:10px;padding:14px;
+  font-family:'JetBrains Mono',monospace;font-size:.78rem;word-break:break-all;position:relative;margin:8px 0;
+  color:var(--txt2);line-height:1.6}
+.copy-btn{position:absolute;top:8px;right:8px;background:var(--grad1);color:#fff;border:none;
+  padding:4px 12px;border-radius:8px;font-size:.7rem;cursor:pointer;font-weight:600;font-family:inherit;
+  transition:transform .15s}
+.copy-btn:hover{transform:scale(1.05)}
+.inline-form{display:inline}
+@media(max-width:768px){.sidebar{display:none}.main{padding:16px}.grid{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.grid{grid-template-columns:1fr}}
 """
 
 
 def panel_page(body, plan_name="Free", title="Dashboard", active="dashboard"):
-    """Render panel page layout. Uses string concat to avoid .format() issues."""
+    """Render panel page layout with premium sidebar."""
     nav_items = [
-        ("dashboard", "/panel", "📊 Dashboard"),
-        ("content", "/panel/content", "📁 Content"),
-        ("ads", "/panel/ads", "📢 Ads"),
-        ("embeds", "/panel/embeds", "🔗 Embeds"),
-        ("subscription", "/panel/subscription", "💳 Subscription"),
-        ("profile", "/panel/profile", "👤 Profile"),
+        ("_section", "", "", "CONTENT"),
+        ("dashboard", "/panel", "📊", "Dashboard"),
+        ("content", "/panel/content", "📁", "My Content"),
+        ("embeds", "/panel/embeds", "🔗", "Embed Links"),
+        ("_section", "", "", "MONETIZE"),
+        ("ads", "/panel/ads", "📢", "Ads"),
+        ("subscription", "/panel/subscription", "💎", "Subscription"),
+        ("_section", "", "", "ACCOUNT"),
+        ("profile", "/panel/profile", "👤", "Profile"),
     ]
     nav_html = ""
-    for key, href, label in nav_items:
+    for item in nav_items:
+        if item[0] == "_section":
+            nav_html += f'<div class="nav-section">{item[3]}</div>\n'
+            continue
+        key, href, icon, label = item
         cls = ' class="active"' if key == active else ""
-        nav_html += f'<a href="{href}"{cls}>{label}</a>\n'
+        nav_html += f'<a href="{href}"{cls}><span class="nav-icon">{icon}</span>{label}</a>\n'
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head>
@@ -115,8 +193,8 @@ def panel_page(body, plan_name="Free", title="Dashboard", active="dashboard"):
 <style>{_PCSS}</style>
 </head><body>
 <nav class="sidebar">
-  <h2>🎬 My Panel</h2>
-  <div class="plan-badge">Plan: {plan_name}</div>
+  <div class="brand"><span class="brand-icon">🎬</span><span class="brand-text">Stream Panel</span></div>
+  <div class="plan-badge">💎 {plan_name}</div>
   {nav_html}
 </nav>
 <div class="main">
@@ -138,28 +216,26 @@ def panel_embed_code(title, watch_url, embed_url, back_url="/panel/embeds"):
     """Render embed code page for a content item."""
     return f"""
 <h1>🔗 Embed Code — {title}</h1>
-<p style="margin-bottom:16px;color:#7777aa">
-  <a href="{back_url}" style="color:#a78bfa">← Back to Content</a>
-</p>
+<p class="page-desc"><a href="{back_url}" style="color:var(--acc3);text-decoration:none">← Back to Content</a></p>
 
 <div class="card">
-  <h3 style="margin-bottom:12px">▶️ Player URL</h3>
+  <h3>▶️ Player URL</h3>
   <div class="code-box"><span id="c1">{watch_url}</span><button class="copy-btn" onclick="copyText('c1')">Copy</button></div>
 </div>
 
 <div class="card">
-  <h3 style="margin-bottom:12px">🖼 iFrame Embed Code</h3>
+  <h3>🖼 iFrame Embed Code</h3>
   <div class="code-box"><span id="c2">&lt;iframe src="{embed_url}" width="720" height="405" frameborder="0" allowfullscreen&gt;&lt;/iframe&gt;</span><button class="copy-btn" onclick="copyText('c2')">Copy</button></div>
 </div>
 
 <div class="card">
-  <h3 style="margin-bottom:12px">📺 Direct Embed URL</h3>
+  <h3>📺 Direct Embed URL</h3>
   <div class="code-box"><span id="c3">{embed_url}</span><button class="copy-btn" onclick="copyText('c3')">Copy</button></div>
 </div>
 
 <div class="card">
-  <h3 style="margin-bottom:12px">🖥 Live Preview</h3>
-  <div style="aspect-ratio:16/9;max-width:720px;border-radius:8px;overflow:hidden;border:1px solid #2a2a48">
+  <h3>🖥 Live Preview</h3>
+  <div style="aspect-ratio:16/9;max-width:720px;border-radius:12px;overflow:hidden;border:1px solid rgba(147,51,234,.15)">
     <iframe src="{embed_url}" style="width:100%;height:100%;border:none" allowfullscreen></iframe>
   </div>
 </div>

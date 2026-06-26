@@ -9,8 +9,6 @@ Features:
 - Pre-roll ad support (VAST or custom HTML)
 - Dark themed, responsive, anti-download
 - Embeddable via iframe
-
-All streaming uses MTProto (NO Bot API getFile, NO 20MB limit).
 """
 
 # ══════════════════════════════════════════════════════════════
@@ -97,7 +95,7 @@ body{{ background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
   <!-- Info -->
   <div class="vp-info">
     <span class="vp-title">{title}</span>
-    <span class="vp-badge">MTProto Stream</span>
+    <span class="vp-badge">HD Stream</span>
   </div>
 
   <!-- Video Container -->
@@ -124,7 +122,7 @@ body{{ background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui
   </div>
 </div>
 
-<div class="vp-footer">Powered by TG Stream — MTProto (No 20MB Limit)</div>
+<div class="vp-footer">Powered by Stream Player</div>
 <div id="vpToast" class="vp-toast"></div>
 
 <script>
@@ -565,7 +563,7 @@ label{{ display:block; font-size:.78rem; color:var(--txt2); margin-bottom:4px;
 </style>
 </head><body>
 <nav class="sidebar">
-  <h2>⚡ TG Stream</h2>
+  <h2>⚡ Stream Admin</h2>
   <a href="/admin" {nav_dashboard}>📊 Dashboard</a>
   <a href="/admin/content" {nav_content}>📁 Content</a>
   <a href="/admin/users" {nav_users}>👤 Users</a>
@@ -598,7 +596,7 @@ button:hover{{ background:#a78bfa; }}
 .err{{ color:#ef4444; font-size:.82rem; margin-bottom:12px; }}
 </style></head><body>
 <div class="card">
-<h1>⚡ TG Stream Admin</h1>
+<h1>⚡ Stream Admin</h1>
 <p>Enter admin password to continue</p>
 {error}
 <form method="POST" action="/admin/login">
