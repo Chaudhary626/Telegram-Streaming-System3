@@ -205,6 +205,120 @@ def ensure_tables():
                 INDEX idx_date (created_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_player_events (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                content_id INT DEFAULT NULL,
+                source_id INT DEFAULT NULL,
+                owner_id BIGINT DEFAULT 0,
+                event_type VARCHAR(30) DEFAULT '',
+                ip_hash VARCHAR(64) DEFAULT '',
+                user_agent VARCHAR(255) DEFAULT '',
+                duration_sec INT DEFAULT 0,
+                position_sec INT DEFAULT 0,
+                quality VARCHAR(20) DEFAULT '',
+                buffering_count INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_content (content_id),
+                INDEX idx_owner (owner_id),
+                INDEX idx_type (event_type),
+                INDEX idx_date (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_settings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                setting_key VARCHAR(100) NOT NULL UNIQUE,
+                setting_value TEXT DEFAULT '',
+                setting_type VARCHAR(20) DEFAULT 'string',
+                category VARCHAR(50) DEFAULT 'general',
+                description VARCHAR(255) DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_roles (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                role VARCHAR(30) NOT NULL DEFAULT 'user',
+                permissions TEXT DEFAULT '',
+                granted_by BIGINT DEFAULT 0,
+                granted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY idx_user_role (user_id, role),
+                INDEX idx_role (role)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_backups (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                filename VARCHAR(255) NOT NULL,
+                file_size BIGINT DEFAULT 0,
+                backup_type VARCHAR(30) DEFAULT 'full',
+                status VARCHAR(20) DEFAULT 'pending',
+                tables_included TEXT DEFAULT '',
+                created_by BIGINT DEFAULT 0,
+                error_message TEXT DEFAULT NULL,
+                started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP NULL DEFAULT NULL,
+                INDEX idx_status (status),
+                INDEX idx_date (started_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_error_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                module VARCHAR(50) DEFAULT '',
+                error_type VARCHAR(100) DEFAULT '',
+                message TEXT DEFAULT '',
+                stack_trace TEXT DEFAULT '',
+                user_id BIGINT DEFAULT NULL,
+                request_path VARCHAR(512) DEFAULT '',
+                ip_address VARCHAR(45) DEFAULT '',
+                is_resolved TINYINT(1) DEFAULT 0,
+                resolved_by BIGINT DEFAULT NULL,
+                resolved_at DATETIME DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_module (module),
+                INDEX idx_resolved (is_resolved),
+                INDEX idx_date (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_notifications (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                target_type VARCHAR(20) DEFAULT 'admin',
+                target_id BIGINT DEFAULT 0,
+                title VARCHAR(200) DEFAULT '',
+                message TEXT DEFAULT '',
+                severity VARCHAR(20) DEFAULT 'info',
+                action_url VARCHAR(512) DEFAULT '',
+                is_read TINYINT(1) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_target (target_type, target_id),
+                INDEX idx_unread (is_read)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+            c.execute("""CREATE TABLE IF NOT EXISTS tg_upload_queue (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id BIGINT NOT NULL DEFAULT 0,
+                file_id VARCHAR(512) NOT NULL DEFAULT '',
+                file_unique_id VARCHAR(128) DEFAULT '',
+                file_size BIGINT DEFAULT 0,
+                file_name VARCHAR(512) DEFAULT '',
+                caption TEXT DEFAULT '',
+                metadata_json TEXT DEFAULT '{}',
+                content_type VARCHAR(20) DEFAULT 'streaming',
+                target_content_id INT DEFAULT NULL,
+                target_slug VARCHAR(255) DEFAULT '',
+                language VARCHAR(50) DEFAULT 'Hindi',
+                quality VARCHAR(20) DEFAULT '720p',
+                status VARCHAR(20) DEFAULT 'pending',
+                priority INT DEFAULT 0,
+                retry_count INT DEFAULT 0,
+                max_retries INT DEFAULT 3,
+                error_message TEXT DEFAULT '',
+                result_json TEXT DEFAULT '{}',
+                started_at DATETIME DEFAULT NULL,
+                completed_at DATETIME DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user (user_id),
+                INDEX idx_status (status),
+                INDEX idx_date (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
     logger.info("All database tables created/verified.")
     _migrate_columns()
 
@@ -298,6 +412,9 @@ def _migrate_columns():
             # ── tg_channels: ensure all columns exist ──
             _safe_add_column(c, "tg_channels", "category", "VARCHAR(50) DEFAULT 'general'")
             _safe_add_column(c, "tg_channels", "is_active", "TINYINT(1) DEFAULT 1")
+            _safe_add_column(c, "tg_channels", "max_storage_gb", "FLOAT DEFAULT 50")
+            _safe_add_column(c, "tg_channels", "used_storage_gb", "FLOAT DEFAULT 0")
+            _safe_add_column(c, "tg_channels", "sort_order", "INT DEFAULT 0")
 
             # ── tg_main_admins: ensure columns ──
             _safe_add_column(c, "tg_main_admins", "password_hash", "VARCHAR(255) NOT NULL DEFAULT ''")
@@ -486,13 +603,65 @@ def get_channel_by_name(name):
 def list_channels():
     with get_connection() as conn:
         with conn.cursor() as c:
-            c.execute("SELECT * FROM tg_channels WHERE is_active=1 ORDER BY name")
+            c.execute("SELECT * FROM tg_channels ORDER BY sort_order ASC, name ASC")
             return c.fetchall()
 
 def delete_channel(ch_id):
     with get_connection() as conn:
         with conn.cursor() as c:
             c.execute("DELETE FROM tg_channels WHERE id=%s", (ch_id,))
+
+
+def update_channel(ch_id, **kwargs):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            sets = []
+            vals = []
+            for k, v in kwargs.items():
+                if k in ('name', 'channel_id', 'category', 'is_active', 'max_storage_gb', 'used_storage_gb', 'sort_order'):
+                    sets.append(f"{k}=%s")
+                    vals.append(v)
+            if not sets:
+                return
+            vals.append(ch_id)
+            c.execute(f"UPDATE tg_channels SET {','.join(sets)} WHERE id=%s", tuple(vals))
+
+
+def toggle_channel(ch_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("UPDATE tg_channels SET is_active = NOT is_active WHERE id=%s", (ch_id,))
+
+
+def list_channels_by_category(category):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_channels WHERE category=%s AND is_active=1 ORDER BY sort_order ASC, id ASC", (category,))
+            return c.fetchall()
+
+
+def get_next_channel(category='general'):
+    """Get next available channel for upload using round-robin."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT * FROM tg_channels WHERE category=%s AND is_active=1 "
+                "ORDER BY used_storage_gb ASC, sort_order ASC LIMIT 1", (category,))
+            return c.fetchone()
+
+
+def increment_channel_storage(ch_id, bytes_added):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            gb = bytes_added / (1024**3)
+            c.execute("UPDATE tg_channels SET used_storage_gb = used_storage_gb + %s WHERE id=%s", (gb, ch_id))
+
+
+def count_channels():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_channels")
+            return c.fetchone()['cnt']
 
 
 # ══════════════════════════════════════════════════════════════
@@ -734,6 +903,20 @@ def get_recent_activity(limit=50):
             c.execute("SELECT * FROM tg_activity_logs ORDER BY created_at DESC LIMIT %s", (limit,))
             return c.fetchall()
 
+def get_activity_logs(limit=50, offset=0):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT * FROM tg_activity_logs ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                (limit, offset))
+            return c.fetchall()
+
+def count_activity_logs():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_activity_logs")
+            return c.fetchone()['cnt']
+
 
 # ══════════════════════════════════════════════════════════════
 # LEGACY
@@ -919,3 +1102,600 @@ def get_content_tree(owner_id, parent_id=None):
                           "WHERE c.owner_id=%s AND c.parent_id=%s AND c.is_active=1 "
                           "GROUP BY c.id ORDER BY c.title", (owner_id, parent_id))
             return c.fetchall()
+
+
+# ══════════════════════════════════════════════════════════════
+# GLOBAL SETTINGS
+# ══════════════════════════════════════════════════════════════
+
+def get_setting(key):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_settings WHERE setting_key=%s LIMIT 1", (key,))
+            return c.fetchone()
+
+def set_setting(key, value):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("UPDATE tg_settings SET setting_value=%s WHERE setting_key=%s", (value, key))
+
+def get_all_settings():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_settings ORDER BY category, setting_key")
+            return c.fetchall()
+
+def insert_setting_if_not_exists(key, value, stype="string", category="general", description=""):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "INSERT IGNORE INTO tg_settings (setting_key, setting_value, setting_type, category, description) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (key, value, stype, category, description))
+
+
+# ══════════════════════════════════════════════════════════════
+# ERROR LOGGING
+# ══════════════════════════════════════════════════════════════
+
+def log_error(module="", error_type="", message="", stack_trace="",
+              user_id=None, request_path="", ip_address=""):
+    """Log an error to tg_error_logs table (created by migration 014)."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                c.execute(
+                    "INSERT INTO tg_error_logs "
+                    "(module, error_type, message, stack_trace, user_id, request_path, ip_address) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (module[:50], error_type[:100], message, stack_trace,
+                     user_id, request_path[:512], ip_address[:45]))
+    except Exception:
+        # If error table doesn't exist yet (pre-migration), silently ignore
+        pass
+
+def list_errors(resolved=None, module=None, limit=50):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            sql = "SELECT * FROM tg_error_logs WHERE 1=1"
+            params = []
+            if resolved is not None:
+                sql += " AND is_resolved=%s"
+                params.append(int(resolved))
+            if module:
+                sql += " AND module=%s"
+                params.append(module)
+            sql += " ORDER BY created_at DESC LIMIT %s"
+            params.append(limit)
+            c.execute(sql, tuple(params))
+            return c.fetchall()
+
+def resolve_error(error_id, admin_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("UPDATE tg_error_logs SET is_resolved=1, resolved_by=%s, "
+                      "resolved_at=NOW() WHERE id=%s", (admin_id, error_id))
+
+
+def get_error_logs(resolved=None, limit=50, offset=0):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            if resolved is not None:
+                c.execute(
+                    "SELECT * FROM tg_error_logs WHERE is_resolved=%s "
+                    "ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                    (int(resolved), limit, offset))
+            else:
+                c.execute(
+                    "SELECT * FROM tg_error_logs ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                    (limit, offset))
+            return c.fetchall()
+
+
+def count_errors(resolved=None):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            if resolved is not None:
+                c.execute("SELECT COUNT(*) AS cnt FROM tg_error_logs WHERE is_resolved=%s", (int(resolved),))
+            else:
+                c.execute("SELECT COUNT(*) AS cnt FROM tg_error_logs")
+            return c.fetchone()['cnt']
+
+
+def purge_old_errors(days=90):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "DELETE FROM tg_error_logs WHERE is_resolved=1 AND created_at < DATE_SUB(NOW(), INTERVAL %s DAY)",
+                (days,))
+            return c.rowcount
+
+
+# ══════════════════════════════════════════════════════════════
+# NOTIFICATIONS
+# ══════════════════════════════════════════════════════════════
+
+def create_notification(target_type="admin", target_id=0, title="", message="",
+                        severity="info", action_url=""):
+    """Create a notification (table created by migration 011)."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                c.execute(
+                    "INSERT INTO tg_notifications "
+                    "(target_type, target_id, title, message, severity, action_url) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (target_type, target_id, title[:200], message, severity, action_url[:512]))
+    except Exception:
+        pass  # Table may not exist pre-migration
+
+def list_notifications(target_type="admin", target_id=0, unread_only=False, limit=20):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                sql = "SELECT * FROM tg_notifications WHERE target_type=%s AND target_id=%s"
+                params = [target_type, target_id]
+                if unread_only:
+                    sql += " AND is_read=0"
+                sql += " ORDER BY created_at DESC LIMIT %s"
+                params.append(limit)
+                c.execute(sql, tuple(params))
+                return c.fetchall()
+    except Exception:
+        return []
+
+def count_unread_notifications(target_type="admin", target_id=0):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                c.execute("SELECT COUNT(*) AS cnt FROM tg_notifications "
+                          "WHERE target_type=%s AND target_id=%s AND is_read=0",
+                          (target_type, target_id))
+                return c.fetchone()["cnt"]
+    except Exception:
+        return 0
+
+def mark_notification_read(notif_id):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                c.execute("UPDATE tg_notifications SET is_read=1 WHERE id=%s", (notif_id,))
+    except Exception:
+        pass
+
+def mark_all_notifications_read(target_type="admin", target_id=0):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as c:
+                c.execute("UPDATE tg_notifications SET is_read=1 "
+                          "WHERE target_type=%s AND target_id=%s", (target_type, target_id))
+    except Exception:
+        pass
+
+
+# ══════════════════════════════════════════════════════════════
+# ROLES & PERMISSIONS
+# ══════════════════════════════════════════════════════════════
+
+def assign_role(user_id, role, granted_by=0, permissions=''):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "INSERT INTO tg_roles (user_id, role, granted_by, permissions) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE permissions=%s, granted_by=%s",
+                (user_id, role, granted_by, permissions, permissions, granted_by))
+
+
+def remove_role(user_id, role):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM tg_roles WHERE user_id=%s AND role=%s", (user_id, role))
+            return c.rowcount > 0
+
+
+def get_user_roles(user_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_roles WHERE user_id=%s", (user_id,))
+            return c.fetchall()
+
+
+def has_role(user_id, role):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT 1 FROM tg_roles WHERE user_id=%s AND role=%s", (user_id, role))
+            return c.fetchone() is not None
+
+
+def has_permission(user_id, permission):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT permissions FROM tg_roles WHERE user_id=%s", (user_id,))
+            for row in c.fetchall():
+                perms = (row.get('permissions') or '').split(',')
+                if permission in perms or '*' in perms:
+                    return True
+            return False
+
+
+def list_users_by_role(role, limit=100):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT r.*, u.username, u.display_name FROM tg_roles r "
+                "LEFT JOIN tg_users u ON u.telegram_id=r.user_id "
+                "WHERE r.role=%s ORDER BY r.granted_at DESC LIMIT %s", (role, limit))
+            return c.fetchall()
+
+
+def list_all_roles():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT role, COUNT(*) AS user_count FROM tg_roles "
+                "GROUP BY role ORDER BY role")
+            return c.fetchall()
+
+
+# ══════════════════════════════════════════════════════════════
+# PLAYER ANALYTICS
+# ══════════════════════════════════════════════════════════════
+
+def log_player_event(content_id=None, source_id=None, owner_id=0, event_type='play',
+                     ip_hash='', user_agent='', duration_sec=0, position_sec=0,
+                     quality='', buffering_count=0):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "INSERT INTO tg_player_events "
+                "(content_id,source_id,owner_id,event_type,ip_hash,user_agent,"
+                "duration_sec,position_sec,quality,buffering_count) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (content_id, source_id, owner_id, event_type, ip_hash, user_agent,
+                 duration_sec, position_sec, quality, buffering_count))
+
+
+def get_analytics_overview(days=30):
+    """Get overview analytics for admin dashboard."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            result = {}
+            # Total views
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_view_logs")
+            result['total_views'] = c.fetchone()['cnt']
+            # Views today
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_view_logs WHERE DATE(viewed_at)=CURDATE()")
+            result['views_today'] = c.fetchone()['cnt']
+            # Views this week
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_view_logs WHERE viewed_at >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)")
+            result['views_week'] = c.fetchone()['cnt']
+            # Unique viewers today
+            c.execute("SELECT COUNT(DISTINCT ip_hash) AS cnt FROM tg_view_logs WHERE DATE(viewed_at)=CURDATE()")
+            result['unique_today'] = c.fetchone()['cnt']
+            # Player events
+            c.execute("SELECT event_type, COUNT(*) AS cnt FROM tg_player_events "
+                      "WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY) "
+                      "GROUP BY event_type", (days,))
+            result['events'] = {r['event_type']: r['cnt'] for r in c.fetchall()}
+            # Views per day (last N days)
+            c.execute(
+                "SELECT DATE(viewed_at) AS day, COUNT(*) AS cnt FROM tg_view_logs "
+                "WHERE viewed_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "GROUP BY DATE(viewed_at) ORDER BY day", (days,))
+            result['daily_views'] = [(str(r['day']), r['cnt']) for r in c.fetchall()]
+            # Top content
+            c.execute(
+                "SELECT c.title, c.slug, COUNT(v.id) AS views FROM tg_view_logs v "
+                "JOIN tg_content c ON c.id=v.content_id "
+                "WHERE v.viewed_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "GROUP BY v.content_id ORDER BY views DESC LIMIT 10", (days,))
+            result['top_content'] = c.fetchall()
+            return result
+
+
+def get_analytics_by_owner(owner_id, days=30):
+    """Get analytics for a specific owner (sub-admin panel)."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            result = {}
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_view_logs WHERE owner_id=%s", (owner_id,))
+            result['total_views'] = c.fetchone()['cnt']
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_view_logs WHERE owner_id=%s AND DATE(viewed_at)=CURDATE()", (owner_id,))
+            result['views_today'] = c.fetchone()['cnt']
+            c.execute(
+                "SELECT DATE(viewed_at) AS day, COUNT(*) AS cnt FROM tg_view_logs "
+                "WHERE owner_id=%s AND viewed_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "GROUP BY DATE(viewed_at) ORDER BY day", (owner_id, days))
+            result['daily_views'] = [(str(r['day']), r['cnt']) for r in c.fetchall()]
+            c.execute(
+                "SELECT c.title, c.slug, COUNT(v.id) AS views FROM tg_view_logs v "
+                "JOIN tg_content c ON c.id=v.content_id "
+                "WHERE v.owner_id=%s AND v.viewed_at >= DATE_SUB(CURDATE(), INTERVAL %s DAY) "
+                "GROUP BY v.content_id ORDER BY views DESC LIMIT 10", (owner_id, days))
+            result['top_content'] = c.fetchall()
+            return result
+
+
+def purge_old_player_events(days=90):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM tg_player_events WHERE created_at < DATE_SUB(NOW(), INTERVAL %s DAY)", (days,))
+            return c.rowcount
+
+
+# ══════════════════════════════════════════════════════════════
+# SEARCH & DUPLICATE DETECTION
+# ══════════════════════════════════════════════════════════════
+
+def search_content(query, owner_id=None, limit=20):
+    """Search content by title/slug using LIKE. FULLTEXT can be added via migration."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            like = f"%{query}%"
+            sql = ("SELECT c.*, COUNT(s.id) AS source_count FROM tg_content c "
+                   "LEFT JOIN tg_sources s ON s.content_id=c.id WHERE "
+                   "(c.title LIKE %s OR c.slug LIKE %s)")
+            params = [like, like]
+            if owner_id:
+                sql += " AND c.owner_id=%s"
+                params.append(owner_id)
+            sql += " GROUP BY c.id ORDER BY c.created_at DESC LIMIT %s"
+            params.append(limit)
+            c.execute(sql, tuple(params))
+            return c.fetchall()
+
+
+def check_duplicate_source(file_unique_id):
+    """Check if a source with this file_unique_id already exists."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT s.*, c.title, c.slug, c.owner_id FROM tg_sources s "
+                "LEFT JOIN tg_content c ON c.id=s.content_id "
+                "WHERE s.file_unique_id=%s LIMIT 1", (file_unique_id,))
+            return c.fetchone()
+
+
+def check_duplicate_video(file_unique_id):
+    """Check legacy tg_videos table for duplicates."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_videos WHERE file_unique_id=%s LIMIT 1", (file_unique_id,))
+            return c.fetchone()
+
+
+def search_videos_legacy(query, limit=20):
+    """Search legacy tg_videos by filename/caption."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            like = f"%{query}%"
+            c.execute(
+                "SELECT * FROM tg_videos WHERE file_name LIKE %s OR caption LIKE %s "
+                "ORDER BY created_at DESC LIMIT %s", (like, like, limit))
+            return c.fetchall()
+
+
+# ══════════════════════════════════════════════════════════════
+# UPLOAD QUEUE
+# ══════════════════════════════════════════════════════════════
+
+def queue_add(user_id, file_id, file_unique_id='', file_size=0, file_name='',
+              caption='', metadata_json='{}', content_type='streaming',
+              target_slug='', language='Hindi', quality='720p', priority=0):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "INSERT INTO tg_upload_queue "
+                "(user_id, file_id, file_unique_id, file_size, file_name, caption, "
+                "metadata_json, content_type, target_slug, language, quality, status, priority) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)",
+                (user_id, file_id, file_unique_id, file_size, file_name, caption,
+                 metadata_json, content_type, target_slug, language, quality, priority))
+            return c.lastrowid
+
+
+def queue_get(task_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_upload_queue WHERE id=%s", (task_id,))
+            return c.fetchone()
+
+
+def queue_dequeue():
+    """Atomically get next pending task and mark it processing."""
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT * FROM tg_upload_queue WHERE status='pending' "
+                "ORDER BY priority DESC, created_at ASC LIMIT 1 FOR UPDATE")
+            task = c.fetchone()
+            if task:
+                c.execute(
+                    "UPDATE tg_upload_queue SET status='processing', "
+                    "started_at=NOW() WHERE id=%s AND status='pending'",
+                    (task['id'],))
+            return task
+
+
+def queue_complete(task_id, result=''):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "UPDATE tg_upload_queue SET status='completed', "
+                "completed_at=NOW(), result_json=%s WHERE id=%s",
+                (result, task_id))
+
+
+def queue_fail(task_id, error, max_retries=3):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT retry_count FROM tg_upload_queue WHERE id=%s", (task_id,))
+            row = c.fetchone()
+            if row and row['retry_count'] < max_retries:
+                c.execute(
+                    "UPDATE tg_upload_queue SET status='pending', "
+                    "retry_count=retry_count+1, error_message=%s WHERE id=%s",
+                    (error, task_id))
+            else:
+                c.execute(
+                    "UPDATE tg_upload_queue SET status='failed', "
+                    "completed_at=NOW(), error_message=%s WHERE id=%s",
+                    (error, task_id))
+
+
+def queue_cancel(task_id, user_id=None):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            if user_id:
+                c.execute(
+                    "UPDATE tg_upload_queue SET status='cancelled' "
+                    "WHERE id=%s AND user_id=%s AND status IN ('pending','failed')",
+                    (task_id, user_id))
+            else:
+                c.execute(
+                    "UPDATE tg_upload_queue SET status='cancelled' "
+                    "WHERE id=%s AND status IN ('pending','failed')",
+                    (task_id,))
+            return c.rowcount
+
+
+def queue_retry(task_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "UPDATE tg_upload_queue SET status='pending', error_message='' "
+                "WHERE id=%s AND status='failed'", (task_id,))
+            return c.rowcount
+
+
+def queue_list_by_user(user_id, status=None, limit=20):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            sql = "SELECT * FROM tg_upload_queue WHERE user_id=%s"
+            params = [user_id]
+            if status:
+                sql += " AND status=%s"
+                params.append(status)
+            sql += " ORDER BY created_at DESC LIMIT %s"
+            params.append(limit)
+            c.execute(sql, tuple(params))
+            return c.fetchall()
+
+
+def queue_list_all(status=None, limit=50):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            sql = ("SELECT q.*, u.username, u.display_name FROM tg_upload_queue q "
+                   "LEFT JOIN tg_users u ON u.telegram_id=q.user_id WHERE 1=1")
+            params = []
+            if status:
+                sql += " AND q.status=%s"
+                params.append(status)
+            sql += " ORDER BY q.created_at DESC LIMIT %s"
+            params.append(limit)
+            c.execute(sql, tuple(params))
+            return c.fetchall()
+
+
+def queue_stats():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT status, COUNT(*) AS cnt FROM tg_upload_queue GROUP BY status")
+            rows = c.fetchall()
+            stats = {r['status']: r['cnt'] for r in rows}
+            c.execute("SELECT COUNT(*) AS total FROM tg_upload_queue")
+            stats['total'] = c.fetchone()['total']
+            return stats
+
+
+def queue_stats_by_user(user_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "SELECT status, COUNT(*) AS cnt FROM tg_upload_queue "
+                "WHERE user_id=%s GROUP BY status", (user_id,))
+            rows = c.fetchall()
+            stats = {r['status']: r['cnt'] for r in rows}
+            c.execute(
+                "SELECT COUNT(*) AS total FROM tg_upload_queue WHERE user_id=%s",
+                (user_id,))
+            stats['total'] = c.fetchone()['total']
+            return stats
+
+
+def queue_cleanup_stale(timeout_minutes=30):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "UPDATE tg_upload_queue SET status='pending' "
+                "WHERE status='processing' AND started_at < DATE_SUB(NOW(), INTERVAL %s MINUTE)",
+                (timeout_minutes,))
+            return c.rowcount
+
+
+def queue_purge_completed(days=7):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "DELETE FROM tg_upload_queue "
+                "WHERE status IN ('completed','cancelled') "
+                "AND created_at < DATE_SUB(NOW(), INTERVAL %s DAY)",
+                (days,))
+            return c.rowcount
+
+
+# ══════════════════════════════════════════════════════════════
+# BACKUPS
+# ══════════════════════════════════════════════════════════════
+
+def create_backup_record(filename, backup_type='full', created_by=0, tables_included=''):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute(
+                "INSERT INTO tg_backups (filename, backup_type, status, tables_included, created_by) "
+                "VALUES (%s, %s, 'running', %s, %s)",
+                (filename, backup_type, tables_included, created_by))
+            return c.lastrowid
+
+
+def update_backup_status(backup_id, status, file_size=0, error_message=None):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            if status == 'completed':
+                c.execute(
+                    "UPDATE tg_backups SET status=%s, file_size=%s, completed_at=NOW() WHERE id=%s",
+                    (status, file_size, backup_id))
+            else:
+                c.execute(
+                    "UPDATE tg_backups SET status=%s, error_message=%s WHERE id=%s",
+                    (status, error_message, backup_id))
+
+
+def list_backups(limit=20):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_backups ORDER BY started_at DESC LIMIT %s", (limit,))
+            return c.fetchall()
+
+
+def get_backup(backup_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT * FROM tg_backups WHERE id=%s", (backup_id,))
+            return c.fetchone()
+
+
+def delete_backup_record(backup_id):
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("DELETE FROM tg_backups WHERE id=%s", (backup_id,))
+            return c.rowcount > 0
+
+
+def count_backups():
+    with get_connection() as conn:
+        with conn.cursor() as c:
+            c.execute("SELECT COUNT(*) AS cnt FROM tg_backups")
+            return c.fetchone()['cnt']
